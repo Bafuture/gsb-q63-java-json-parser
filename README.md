@@ -1,32 +1,74 @@
-# JSON 解析器与生成器
+# gsb-q63-java-json-parser
 
-Pair-wise GSB 标注任务仓库（第 6 批 / 63）。
+自研 JSON 解析器与生成器，零第三方 JSON 依赖（仅测试用 JUnit 5 / AssertJ）。
+面向服务间报文交换场景：错误定位精确到行列，大整数不丢精度。
 
-| 项目 | 内容 |
-|------|------|
-| 任务类型 | Feature 迭代 |
-| 任务难度 | 困难 |
-| 语言/框架 | Java, Maven, JUnit 5 |
-| 环境可复现等级 | 无外部依赖 |
-| 构建方式 | Maven（含 mvnw wrapper，无需本机安装 Maven） |
-
-> 本仓库是**初始环境快照**：只有工程骨架，不含任何实现代码。
-> 分支说明：`main` 为初始环境；`A`、`B` 为两次独立执行各自的工作分支，均从 `main` 的同一个提交拉出。
-
-## 运行方式
+## 快速开始
 
 ```bash
-./mvnw -q verify
+mvn -q verify   # 编译并运行全部测试
 ```
 
-## 任务提示词
+```java
+import com.example.gsb.json.*;
 
-以下为本题完整的 User Prompt 原文，两次执行必须使用完全相同的文本。
+JsonValue v = Json.parse("{\"orderId\": 9007199254740993, \"amount\": 0.1}");
+long id = v.asObject().get("orderId").asNumber().longValue();   // 精确，不丢精度
 
-服务之间要交换报文，现有 JSON 库解析出错只报「第几行有问题」定位不清，大整数还会被转成 double 丢精度。请从零实现一个 JSON 解析器与生成器，**不允许依赖 Jackson、Gson、Fastjson 等任何现成 JSON 库**。仓库目前只有一个空的 Maven 工程（pom.xml 只声明 JUnit 5 与 AssertJ）。要求：1) 自研词法分析与语法分析，支持对象、数组、字符串、数字、布尔与 null；2) 字符串支持 `\u` 转义与常见控制字符转义；3) 数字解析不得丢精度，并说明用 BigDecimal 还是 double 及理由；4) 语法错误要报出行号列号与可读提示；5) 提供对象模型与序列化，保证「解析 → 序列化 → 再解析」结果等价。测试覆盖正常解析、错误定位与往返一致三类场景，`mvn -q verify` 一条命令跑通，README 说明支持范围与已知限制。
+String s = Json.stringify(v);          // 序列化
+JsonValue v2 = Json.parse(s);          // 再解析
+assert v2.equals(v);                   // 解析 → 序列化 → 再解析 结果等价
+```
 
-## 提交要求
+## 支持范围
 
-1. 在本仓库中完成提示词要求的全部内容。
-2. `./mvnw -q verify` 必须通过。
-3. 完成后在所属分支（A 或 B）上提交，产物快照的父提交必须是初始环境快照。
+- 全部 JSON 值类型：object、array、string、number、true、false、null
+- 字符串转义：`\" \\ \/ \b \f \n \r \t` 与 `\uXXXX`（含代理对，如 emoji）
+- 数字文法严格遵循 RFC 8259：`-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?`，
+  前导零、缺小数位、缺指数位都会报错
+- 对象保持键的插入顺序（`LinkedHashMap`）
+- 程序化构造：`new JsonObject().put("k", "v")` / `new JsonArray().add(1L)`
+
+## 数字精度：为什么用 BigDecimal 而不是 double
+
+`double` 只有 53 位尾数，`9007199254740993`（2^53+1）会被舍入成
+`9007199254740992`，`0.1` 也无法精确表示——服务间传金额、订单号时这是事故。
+因此 `JsonNumber` 内部一律用 `BigDecimal` 保存词素，任意大的整数、
+任意精度的小数都逐位保留。序列化用 `BigDecimal.toString()`，其输出
+（含 `1E+3` 这类科学计数法）是合法 JSON 数字且能被原样读回，保证往返一致。
+
+需要时注意：`JsonNumber.equals` 与 `BigDecimal.equals` 一致，区分标度
+（`1.0` ≠ `1.00`）；纯数值比较请用 `bigDecimalValue().compareTo(...)`。
+也提供 `doubleValue()` / `longValue()` 等便捷取值，但那是调用方的主动取舍。
+
+## 错误报告
+
+语法错误抛出 `JsonException`，携带行号、列号与可读提示：
+
+```
+line 3, column 8: invalid literal, expected 'true'
+line 1, column 6: expected ':' after object key, but found number 1
+line 1, column 4: unescaped control character in string, use \u000a instead
+```
+
+`JsonException#getLine()` / `getColumn()` 可程序化读取。
+
+## 代码结构
+
+| 类 | 职责 |
+| --- | --- |
+| `JsonLexer` | 词法分析：字符流 → token，记录行列号，处理转义与数字词素 |
+| `JsonParser` | 语法分析：递归下降，token → 对象模型 |
+| `JsonValue` 及子类 | 对象模型：`JsonObject/JsonArray/JsonString/JsonNumber/JsonBoolean/JsonNull` |
+| `JsonWriter` | 序列化时的字符串转义 |
+| `Json` | 门面：`parse` / `stringify` |
+| `JsonException` | 带行列号的解析异常 |
+
+## 已知限制
+
+- 最大嵌套深度 1000 层，超出报错（防止恶意输入打爆栈）
+- 对象键重复时后者覆盖前者，不报错（与多数解析器行为一致）
+- 序列化为紧凑格式，不提供美化缩进输出
+- 孤立的代理项（lone surrogate）不报错，原样保留
+- 数字不限制量级，`1e999999` 这类值会原样保留为 `BigDecimal`
+  （转成 `double` 才是 Infinity）
