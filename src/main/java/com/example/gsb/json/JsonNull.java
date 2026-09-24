@@ -1,0 +1,27 @@
+package com.example.gsb.json;
+
+/**
+ * JSON null，单例。
+ */
+public final class JsonNull implements JsonValue {
+
+    public static final JsonNull INSTANCE = new JsonNull();
+
+    private JsonNull() {
+    }
+
+    @Override
+    public String toJson() {
+        return "null";
+    }
+
+    @Override
+    public String toPrettyJson() {
+        return toJson();
+    }
+
+    @Override
+    public String toString() {
+        return toJson();
+    }
+}
